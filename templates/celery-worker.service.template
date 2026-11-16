@@ -1,0 +1,25 @@
+# Managed by Django native deployment: {root}
+[Unit]
+Description=Celery worker ({service})
+After=network.target postgresql.service {redis_dependency}
+Requires=postgresql.service {redis_dependency}
+
+[Service]
+Type=simple
+User={user}
+Group=www-data
+WorkingDirectory={root}
+Environment=DJANGO_SETTINGS_MODULE={settings_module} PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+Environment=SERVICE={service} APP_USER={user}
+ExecStart={venv}/bin/python {root}/deploy-portable/lib/native.py serve-celery -A {celery_app} worker --loglevel=INFO --concurrency=1 --hostname={service}@%%h
+Restart=on-failure
+RestartSec=5
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths={media}
+
+[Install]
+WantedBy=multi-user.target

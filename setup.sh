@@ -9,7 +9,11 @@ run_step identity 'Create isolated runtime identity' packages_ready create_ident
 run_step python 'Install Python dependencies' identity_ready install_python python_ready
 run_step environment 'Validate production .env' python_ready configure_environment environment_ready
 run_step postgres 'Provision PostgreSQL safely' environment_ready provision_postgres postgres_ready
-run_step redis 'Restrict and start Redis' environment_ready provision_redis redis_ready
+if redis_enabled; then
+    run_step redis 'Restrict and start Redis' environment_ready provision_redis redis_ready
+else
+    skip_step redis
+fi
 run_step checks 'Validate Django and connections' dependencies_ready django_checks django_checks
 run_step migrations 'Apply database migrations' django_checks migrate migrations_ready
 run_step static 'Collect static files and permissions' migrations_ready collect_static static_ready

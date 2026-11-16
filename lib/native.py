@@ -2,6 +2,7 @@
 import argparse
 from datetime import datetime, timezone
 import getpass
+import importlib.util
 import io
 import ipaddress
 import json
@@ -69,6 +70,15 @@ def valid_host(value):
                    for part in value.split("."))
 
 
+def local_redis_url(values):
+    url = values.get("REDIS_URL") or ""
+    if url:
+        return url
+    broker = values.get("CELERY_BROKER_URL") or ""
+    parsed = urlsplit(broker)
+    return broker if parsed.scheme == "redis" and parsed.hostname in {"localhost", "127.0.0.1", "::1"} else ""
+
+
 def paths(values):
     for key in ("STATIC_ROOT", "MEDIA_ROOT"):
         require(not placeholder(values.get(key)), f"Set a real {key} in .env.")
@@ -88,7 +98,7 @@ def paths(values):
 
 def validate_environment(values):
     for key in ("SECRET_KEY", "DB_NAME", "DB_USER", "DB_PASSWORD", "DB_HOST", "DB_PORT",
-                "APP_DOMAIN", "ALLOWED_HOSTS", "REDIS_URL", "STATIC_ROOT", "MEDIA_ROOT"):
+                "APP_DOMAIN", "ALLOWED_HOSTS", "STATIC_ROOT", "MEDIA_ROOT"):
         require(not placeholder(values.get(key)), f"Set a real {key} in .env.")
     require(len(values["SECRET_KEY"]) >= 50, "SECRET_KEY must contain at least 50 characters; existing keys are never regenerated.")
     for key in ("DB_NAME", "DB_USER"):
@@ -109,9 +119,29 @@ def validate_environment(values):
     hosts = [h.strip() for h in values["ALLOWED_HOSTS"].split(",")]
     require(domain in hosts and all(valid_host(h) for h in hosts), "ALLOWED_HOSTS must contain APP_DOMAIN and explicit hostnames/IPs only.")
     require(not values.get("REDIS_SOCKET"), "Native deployment uses localhost Redis TCP; remove REDIS_SOCKET explicitly.")
-    parsed = urlsplit(values.get("REDIS_URL", ""))
-    require(parsed.scheme == "redis" and parsed.hostname in {"localhost", "127.0.0.1", "::1"} and parsed.port in {None, 6379},
-            "REDIS_URL must address the native localhost Redis on port 6379; existing values are preserved.")
+    if values.get("REDIS_URL"):
+        require(not placeholder(values["REDIS_URL"]), "Set a real REDIS_URL or remove it.")
+    if bool(values.get("CELERY_BROKER_URL")) != bool(values.get("DEPLOY_CELERY_APP")):
+        raise ValueError("Set both CELERY_BROKER_URL and DEPLOY_CELERY_APP, or neither.")
+    if values.get("CELERY_BROKER_URL"):
+        require(not placeholder(values["CELERY_BROKER_URL"]) and not any(c.isspace() for c in values["CELERY_BROKER_URL"]),
+                "Set a valid CELERY_BROKER_URL.")
+        broker = urlsplit(values["CELERY_BROKER_URL"])
+        require(bool(broker.scheme) and (broker.scheme not in {"redis", "rediss", "amqp", "amqps"} or bool(broker.hostname)),
+                "CELERY_BROKER_URL needs a broker scheme and host.")
+        if broker.scheme in {"redis", "rediss"}:
+            require(importlib.util.find_spec("redis") is not None, "Add redis to requirements.txt for a Redis Celery broker.")
+        app = values["DEPLOY_CELERY_APP"]
+        require(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*", app), "Invalid DEPLOY_CELERY_APP.")
+        source = ROOT / (app.replace(".", "/") + ".py")
+        require(source.is_file() or (ROOT / app.replace(".", "/") / "__init__.py").is_file(), "Missing DEPLOY_CELERY_APP module.")
+        require(importlib.util.find_spec("celery") is not None, "Add Celery to requirements.txt before deploying its worker.")
+    redis_url = local_redis_url(values)
+    if redis_url:
+        parsed = urlsplit(redis_url)
+        require(parsed.scheme == "redis" and parsed.hostname in {"localhost", "127.0.0.1", "::1"} and parsed.port in {None, 6379},
+                "Local Redis must use redis://localhost:6379 or redis://127.0.0.1:6379.")
+        require(importlib.util.find_spec("redis") is not None, "Add redis to requirements.txt before deploying local Redis.")
     paths(values)
     require(ENV.stat().st_mode & 0o777 == 0o600, ".env must have mode 0600.")
     require(ENV.stat().st_uid == pwd.getpwnam(USER).pw_uid, ".env must belong to the dedicated application user.")
@@ -220,7 +250,7 @@ def database_check():
 
 def redis_check():
     import redis
-    client = redis.Redis.from_url(read_env()["REDIS_URL"], socket_connect_timeout=3, socket_timeout=3)
+    client = redis.Redis.from_url(local_redis_url(read_env()), socket_connect_timeout=3, socket_timeout=3)
     require(client.ping(), "Redis PING failed.")
     binds = client.config_get("bind")["bind"].split()
     require(bool(binds) and all(v.lstrip("-") in {"127.0.0.1", "::1"} for v in binds), "Redis must bind only to loopback addresses.")
@@ -283,17 +313,25 @@ def rendered_files():
     workers = max(1, min(4, (os.cpu_count() or 1) * 2 + 1, memory_kib // (512 * 1024)))
     replacements = dict(root=str(ROOT), service=SERVICE, user=USER, venv=str(ROOT / ".venv-native"),
                         static=str(static), media=str(media), domain=values["APP_DOMAIN"], workers=workers,
-                        settings_module=values["DEPLOY_SETTINGS_MODULE"], wsgi_module=values["DEPLOY_WSGI_MODULE"])
-    for template, destination in (
+                        settings_module=values["DEPLOY_SETTINGS_MODULE"], wsgi_module=values["DEPLOY_WSGI_MODULE"],
+                        celery_app=values.get("DEPLOY_CELERY_APP", ""),
+                        redis_dependency="redis-server.service" if local_redis_url(values) else "")
+    files = [
         ("gunicorn.service.template", f"/etc/systemd/system/{SERVICE}.service"),
         ("nginx.conf.template", f"/etc/nginx/sites-available/{SERVICE}"),
-    ):
+    ]
+    if values.get("CELERY_BROKER_URL"):
+        files.append(("celery-worker.service.template", f"/etc/systemd/system/{SERVICE}-celery.service"))
+    for template, destination in files:
         yield Path(destination), (DEPLOY / "templates" / template).read_text().format(**replacements)
 
 
 def render(check=False):
     enabled = Path(f"/etc/nginx/sites-enabled/{SERVICE}")
     target = Path(f"/etc/nginx/sites-available/{SERVICE}")
+    worker = Path(f"/etc/systemd/system/{SERVICE}-celery.service")
+    worker_reference = STATE / (worker.name + ".managed")
+    worker_enabled = bool(read_env().get("CELERY_BROKER_URL"))
     if check:
         for path, text in rendered_files():
             actual = path.read_text() if path.is_file() else ""
@@ -304,6 +342,7 @@ def render(check=False):
             require(actual.startswith(f"# Managed by Django native deployment: {ROOT}\n") and
                     (actual == text or allowed_nginx_edit), "Managed service inputs changed; review and rerun setup/update.")
         require(enabled.is_symlink() and enabled.resolve() == target, "Managed Nginx site is not enabled.")
+        require(worker_enabled or not worker.exists(), "Celery worker remains installed after its configuration was removed.")
         return
     marker = f"# Managed by Django native deployment: {ROOT}\n"
     # nginx -T expands all includes, including virtual hosts outside sites-enabled.
@@ -324,11 +363,18 @@ def render(check=False):
             previous = reference.read_text() if reference.is_file() else ""
             require(path.read_text() == previous or (path == target and previous == text), "Managed configuration was edited manually and deployment inputs changed; reconcile before continuing (see README).")
     require(not enabled.exists() or (enabled.is_symlink() and enabled.resolve() == target), "Nginx enabled-site path is occupied.")
+    if not worker_enabled and worker.exists():
+        require(worker_reference.is_file() and worker.read_text() == worker_reference.read_text() and
+                worker.read_text().startswith(marker), "Celery worker was edited manually; review before removing it.")
     for path, text in files:
         if path == target and path.exists() and path.read_text() != text and (STATE / (path.name + ".managed")).read_text() == text:
             continue
         write_atomic(path, text)
         write_atomic(STATE / (path.name + ".managed"), text, 0o600)
+    if not worker_enabled and worker.exists():
+        subprocess.run(["systemctl", "disable", "--now", f"{SERVICE}-celery.service"], check=True)
+        worker.unlink()
+        worker_reference.unlink()
     if not enabled.is_symlink():
         enabled.symlink_to(target)
     print("Rendered dedicated Gunicorn unit and Nginx site; unrelated virtual hosts preserved.")
@@ -472,6 +518,10 @@ def main():
         environment()
     elif command == "environment-check":
         validate_environment(read_env())
+    elif command == "feature-enabled":
+        require(len(sys.argv) == 3 and sys.argv[2] in {"redis", "celery"}, "Unknown feature.")
+        values = read_env()
+        sys.exit(0 if (local_redis_url(values) if sys.argv[2] == "redis" else values.get("CELERY_BROKER_URL")) else 1)
     elif command == "postgres":
         postgres()
     elif command == "database-check":
@@ -507,6 +557,10 @@ def main():
     elif command == "serve":
         load_django()
         os.execv(str(ROOT / ".venv-native/bin/gunicorn"), ["gunicorn", *sys.argv[2:]])
+    elif command == "serve-celery":
+        load_django()
+        require(bool(read_env().get("CELERY_BROKER_URL")), "Celery is not configured.")
+        os.execv(str(ROOT / ".venv-native/bin/celery"), ["celery", *sys.argv[2:]])
     else:
         raise ValueError("Unknown native deployment operation.")
 

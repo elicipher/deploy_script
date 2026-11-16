@@ -1,8 +1,8 @@
 # Managed by Django native deployment: {root}
 [Unit]
 Description=Django application ({service})
-After=network.target postgresql.service redis-server.service
-Requires=postgresql.service redis-server.service
+After=network.target postgresql.service {redis_dependency}
+Requires=postgresql.service {redis_dependency}
 
 [Service]
 Type=simple

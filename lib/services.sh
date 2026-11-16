@@ -6,17 +6,23 @@ configure_services() {
     root_native permissions
     root_native render
     systemd-analyze verify "/etc/systemd/system/$SERVICE.service"
+    if celery_enabled; then systemd-analyze verify "/etc/systemd/system/$SERVICE-celery.service"; fi
     nginx -t
     systemctl daemon-reload
 }
 
 services_ready() {
-    root_native render-check && systemd-analyze verify "/etc/systemd/system/$SERVICE.service" && nginx -t
+    root_native render-check && systemd-analyze verify "/etc/systemd/system/$SERVICE.service" && nginx -t &&
+        { ! celery_enabled || systemd-analyze verify "/etc/systemd/system/$SERVICE-celery.service"; }
 }
 
 start_services() {
     systemctl enable "$SERVICE" nginx
     systemctl restart "$SERVICE"
+    if celery_enabled; then
+        systemctl enable "$SERVICE-celery"
+        systemctl restart "$SERVICE-celery"
+    fi
     systemctl start nginx
     nginx -t
     systemctl reload nginx
@@ -30,5 +36,6 @@ start_services() {
 
 health_ready() {
     systemctl is-enabled --quiet "$SERVICE" && systemctl is-active --quiet "$SERVICE" &&
-        systemctl is-enabled --quiet nginx && systemctl is-active --quiet nginx && native health
+        systemctl is-enabled --quiet nginx && systemctl is-active --quiet nginx && native health &&
+        { ! celery_enabled || { systemctl is-enabled --quiet "$SERVICE-celery" && systemctl is-active --quiet "$SERVICE-celery"; }; }
 }

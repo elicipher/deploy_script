@@ -14,7 +14,7 @@ initialize() {
     MODE="$1"
     STEP_NUMBER=0
     TOTAL_STEPS=13
-    if [[ "$MODE" == update ]]; then TOTAL_STEPS=7; fi
+    if [[ "$MODE" == update ]]; then TOTAL_STEPS=8; fi
     [[ $EUID == 0 ]] || die 'Run with sudo bash deploy-portable/setup.sh (or update.sh).'
     [[ -t 0 && -t 1 ]] || die 'An interactive terminal is required.'
     [[ "$ROOT" =~ ^/[a-zA-Z0-9/_-]+$ ]] || die 'Use a repository path with letters, digits, /, _ and - only.'
@@ -130,7 +130,10 @@ provision_postgres() {
 }
 postgres_ready() { systemctl is-enabled --quiet postgresql && systemctl is-active --quiet postgresql && native database-check; }
 redis_ready() { systemctl is-enabled --quiet redis-server && systemctl is-active --quiet redis-server && native redis-check; }
-dependencies_ready() { environment_ready && postgres_ready && redis_ready; }
+redis_enabled() { native feature-enabled redis; }
+celery_enabled() { native feature-enabled celery; }
+dependencies_ready() { environment_ready && postgres_ready && { ! redis_enabled || redis_ready; }; }
+skip_step() { STEP="$1"; STEP_NUMBER=$((STEP_NUMBER + 1)); printf '\n[%s/%s:%s] SKIPPED (not configured)\n' "$STEP_NUMBER" "$TOTAL_STEPS" "$1"; }
 django_checks() {
     dependencies_ready && manage check && manage check --deploy --fail-level ERROR
 }

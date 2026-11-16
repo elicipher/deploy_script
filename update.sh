@@ -12,6 +12,11 @@ packages_ready || die 'Native packages missing; rerun setup.'
 rm -f -- "$STATE/steps/update-git"
 run_step git 'Fetch and fast-forward the configured branch' environment_ready update_code git_clean
 run_step python 'Install changed dependencies' identity_ready install_python python_ready
+if redis_enabled; then
+    run_step redis 'Restrict and start Redis' environment_ready provision_redis redis_ready
+else
+    skip_step redis
+fi
 run_step checks 'Validate Django and connections' dependencies_ready django_checks django_checks
 run_step migrations 'Apply new migrations' django_checks migrate migrations_ready
 run_step static 'Collect updated static files' migrations_ready collect_static static_ready

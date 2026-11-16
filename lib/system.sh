@@ -2,7 +2,7 @@
 # shellcheck shell=bash
 PACKAGES=(python3.12 python3.12-venv python3-dev python3-dotenv python3-psycopg
     build-essential libpq-dev libjpeg-dev zlib1g-dev libwebp-dev libffi-dev libssl-dev
-    postgresql postgresql-client redis-server nginx git curl ca-certificates acl)
+    postgresql postgresql-client nginx git curl ca-certificates acl)
 
 validate_system() {
     [[ $EUID == 0 ]] || die 'Root privileges required.'
@@ -91,6 +91,10 @@ python_ready() {
 }
 
 provision_redis() {
+    if [[ "$(dpkg-query -W -f='${Status}' redis-server 2>/dev/null || :)" != 'install ok installed' ]]; then
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends redis-server
+    fi
     root_native redis-config
     systemctl enable --now redis-server
     if ! redis_ready; then systemctl restart redis-server; fi
