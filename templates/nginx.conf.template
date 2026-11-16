@@ -1,0 +1,27 @@
+# Managed by Django native deployment: {root}
+server {{
+    listen 80;
+    listen [::]:80;
+    server_name {domain};
+    client_max_body_size 20m;
+    location /static/ {{
+        alias {static}/;
+        autoindex off;
+    }}
+    # Uploads may contain active content. Serve them as downloads.
+    location /media/ {{
+        alias {media}/;
+        autoindex off;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Content-Disposition attachment always;
+    }}
+    location / {{
+        proxy_pass http://unix:/run/{service}/gunicorn.sock;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 65s;
+    }}
+}}
