@@ -1,7 +1,8 @@
 # Reusable Django deployment kit
 
 Copy this entire `deploy-portable/` directory into the root of another Django
-repository. It targets Ubuntu 24.04 with systemd, PostgreSQL 16, Nginx,
+repository. You may rename the directory; replace `deploy-portable` in the
+commands below with its actual name. It targets Ubuntu 24.04 with systemd, PostgreSQL 16, Nginx,
 Python 3.12, and Gunicorn. The target repository must have `manage.py`,
 `requirements.txt`, a Git branch with an upstream, and a production `.env`.
 `requirements.txt` must install Django, Gunicorn, python-dotenv, psycopg, and
@@ -31,6 +32,8 @@ DB_PORT=5432
 STATIC_ROOT=/var/www/myproject/static
 MEDIA_ROOT=/srv/myproject/media
 ```
+
+DEBUG may be set to True temporarily for troubleshooting; restore False afterward because Django exposes detailed error pages when it is enabled.
 
 The health endpoint must return HTTP 200 without authentication, directly from
 Gunicorn and through Nginx. Set `DEPLOY_HEALTH_JSON=True` only when it returns

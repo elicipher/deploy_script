@@ -12,7 +12,7 @@ WorkingDirectory={root}
 # python-dotenv loads .env; systemd EnvironmentFile has different quote semantics.
 Environment=DJANGO_SETTINGS_MODULE={settings_module} PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 Environment=SERVICE={service} APP_USER={user}
-ExecStart={venv}/bin/python {root}/deploy-portable/lib/native.py serve {wsgi_module}:application --bind unix:/run/{service}/gunicorn.sock --workers {workers} --threads 2 --timeout 60 --umask 007 --access-logfile - --error-logfile -
+ExecStart={venv}/bin/python {deploy_dir}/lib/native.py serve {wsgi_module}:application --bind unix:/run/{service}/gunicorn.sock --workers {workers} --threads 2 --timeout 60 --umask 007 --access-logfile - --error-logfile -
 RuntimeDirectory={service}
 RuntimeDirectoryMode=0750
 Restart=on-failure

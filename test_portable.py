@@ -37,7 +37,7 @@ class PortableTests(unittest.TestCase):
             subprocess.run(["bash", "-n", str(script)], check=True)
         values = dict.fromkeys(("root", "service", "user", "venv", "workers", "static",
                                 "media", "domain", "settings_module", "wsgi_module", "celery_app",
-                                "redis_dependency"), "test")
+                                "redis_dependency", "deploy_dir"), "test")
         for template in (DEPLOY / "templates").iterdir():
             self.assertIn("test", template.read_text().format(**values))
 
@@ -62,6 +62,9 @@ class PortableTests(unittest.TestCase):
             with (patch.object(native, "ROOT", root), patch.object(native, "ENV", env),
                   patch.object(native, "USER", pwd.getpwuid(os.getuid()).pw_name)):
                 native.validate_environment(values)
+                native.validate_environment({**values, "DEBUG": "True"})
+                with self.assertRaises(ValueError):
+                    native.validate_environment({**values, "DEBUG": "invalid"})
                 self.assertEqual(native.local_redis_url(values), "")
                 for key, bad in (("DEPLOY_SETTINGS_MODULE", "other.settings"),
                                  ("DEPLOY_WSGI_MODULE", "../bad"),

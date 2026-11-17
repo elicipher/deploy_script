@@ -33,6 +33,13 @@ def require(ok, message):
         raise ValueError(message)
 
 
+def validation_codes(exc):
+    if hasattr(exc, "error_dict"):
+        return "; ".join(f"{field}: {', '.join(error.code or 'invalid' for error in errors)}"
+                         for field, errors in exc.error_dict.items())
+    return ", ".join(error.code or "invalid" for error in exc.error_list)
+
+
 def read_env():
     require(not ENV.is_symlink(), ".env must not be a symlink.")
     require(ENV.is_file(), f"Missing {ENV}; create it with the required production values before deploying.")
@@ -106,7 +113,7 @@ def validate_environment(values):
         require(len(value.encode()) <= 63 and not any(ord(c) < 32 for c in value), f"Invalid {key} (PostgreSQL limit is 63 bytes).")
     require(values["DB_HOST"] in {"localhost", "127.0.0.1"}, "Native provisioning requires a local DB_HOST (localhost or 127.0.0.1). Existing values are preserved; edit .env explicitly.")
     require(values["DB_PORT"].isdigit() and 1 <= int(values["DB_PORT"]) <= 65535, "Invalid DB_PORT.")
-    require(values.get("DEBUG", "").lower() == "false", "Set DEBUG=False explicitly.")
+    require(values.get("DEBUG", "").lower() in {"true", "false"}, "Set DEBUG=True or DEBUG=False explicitly.")
     for key in ("DEPLOY_SETTINGS_MODULE", "DEPLOY_WSGI_MODULE"):
         module = values.get(key, "")
         require(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+", module), f"Invalid {key}.")
@@ -163,8 +170,10 @@ def load_django():
     import django
     django.setup()
     from django.conf import settings
-    require(settings.SECRET_KEY == values["SECRET_KEY"] and settings.DEBUG is False and
+    require(settings.SECRET_KEY == values["SECRET_KEY"] and settings.DEBUG == (values["DEBUG"].lower() == "true") and
             values["APP_DOMAIN"] in settings.ALLOWED_HOSTS, "Django secret, DEBUG or ALLOWED_HOSTS differs from .env.")
+    require(settings.STATIC_ROOT and settings.MEDIA_ROOT,
+            "Define STATIC_ROOT and MEDIA_ROOT in Django settings using the .env values.")
     require(Path(settings.STATIC_ROOT) == Path(values["STATIC_ROOT"]) and
             Path(settings.MEDIA_ROOT) == Path(values["MEDIA_ROOT"]), "Django static/media paths differ from .env.")
     database = settings.DATABASES["default"]
@@ -311,7 +320,7 @@ def rendered_files():
     # Limit memory use on small VPS hosts. Each worker needs roughly 150 MB.
     memory_kib = int(re.search(r"MemTotal:\s+(\d+)", Path("/proc/meminfo").read_text()).group(1))
     workers = max(1, min(4, (os.cpu_count() or 1) * 2 + 1, memory_kib // (512 * 1024)))
-    replacements = dict(root=str(ROOT), service=SERVICE, user=USER, venv=str(ROOT / ".venv-native"),
+    replacements = dict(root=str(ROOT), deploy_dir=str(DEPLOY), service=SERVICE, user=USER, venv=str(ROOT / ".venv-native"),
                         static=str(static), media=str(media), domain=values["APP_DOMAIN"], workers=workers,
                         settings_module=values["DEPLOY_SETTINGS_MODULE"], wsgi_module=values["DEPLOY_WSGI_MODULE"],
                         celery_app=values.get("DEPLOY_CELERY_APP", ""),
@@ -408,6 +417,7 @@ def superuser():
     load_django()
     from django.contrib.auth import get_user_model
     from django.contrib.auth.password_validation import validate_password
+    from django.core.exceptions import ValidationError
     from django.db import transaction
     User = get_user_model()
     if User.objects.filter(is_superuser=True, is_staff=True, is_active=True).exists():
@@ -423,10 +433,16 @@ def superuser():
     require(password == getpass.getpass("Password (again): "), "Passwords differ.")
     candidate = User(**fields, is_staff=True, is_superuser=True)
     candidate.set_password(password)
-    candidate.full_clean()
-    validate_password(password, candidate)
-    with transaction.atomic():
-        User.objects.create_superuser(password=password, **fields)
+    stage = "fields"
+    try:
+        candidate.full_clean()
+        stage = "password"
+        validate_password(password, candidate)
+        stage = "creation"
+        with transaction.atomic():
+            User.objects.create_superuser(password=password, **fields)
+    except ValidationError as exc:
+        raise ValueError(f"Superuser {stage} validation failed: {validation_codes(exc)}") from None
     print("Superuser created with model and password validation.")
 
 
